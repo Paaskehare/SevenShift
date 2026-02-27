@@ -43,7 +43,10 @@ import re
 import time
 from urllib.parse import urlencode, urljoin
 
+import requests
+
 from bs4 import BeautifulSoup
+from decouple import config as env_config
 from camoufox.sync_api import Camoufox
 from django.core.management.base import BaseCommand
 from django.utils import timezone
@@ -89,14 +92,23 @@ NAV_TIMEOUT = 60_000   # ms — generous for challenge + page load
 SETTLE_MS   = 3_000    # ms — poll interval while waiting for challenge to clear
 
 
-def _is_akamai_challenge(html: str) -> bool:
+def _is_js_challenge(html: str) -> bool:
+    """Return True if the page is a solvable Akamai JS challenge (wait it out)."""
     return 'sec-if-cpt-container' in html or 'akamai-logo' in html
+
+
+def _is_hard_blocked(html: str) -> bool:
+    """Return True if the page is a permanent bot block (cannot be solved by waiting)."""
+    return (
+        'Zugriff verweigert' in html
+        or 'Reference Error:' in html
+    )
 
 
 class MobileDeClient:
     def __init__(self, delay: float = 2.0):
         self.delay = delay
-        proxy_url = os.environ.get('MOBILE_DE_PROXY', '').strip()
+        proxy_url = env_config('MOBILE_DE_PROXY', default='').strip()
 
         camoufox_kwargs: dict = {'headless': True}
         if proxy_url:
@@ -112,28 +124,43 @@ class MobileDeClient:
         self._warmup()
 
     def _warmup(self):
-        """Visit the homepage so Akamai issues its initial cookies."""
-        logger.info('Browser warmup: visiting mobile.de homepage…')
+        """Visit both subdomains so Akamai issues cookies for each."""
+        logger.info('Browser warmup: visiting mobile.de…')
         self._navigate('https://www.mobile.de/')
+        logger.info('Browser warmup: visiting suchen.mobile.de…')
+        self._navigate('https://suchen.mobile.de/')
 
     def _navigate(self, url: str) -> str:
-        """Navigate to *url*, wait for any Akamai challenge to clear, return HTML."""
+        """Navigate to *url*, wait for any Akamai block/challenge to clear, return HTML."""
         try:
             self._page.goto(url, wait_until='domcontentloaded', timeout=NAV_TIMEOUT)
         except Exception as exc:
             logger.warning('Navigation error for %s: %s', url, exc)
 
-        for attempt in range(15):           # up to 45 s
+        # Check once before polling — fail fast on hard blocks
+        html = self._page.content()
+        if _is_hard_blocked(html):
+            raise RuntimeError(
+                f'Hard bot-block (Access denied) on {url}. '
+                'Try setting MOBILE_DE_PROXY env var or run again later.'
+            )
+
+        for attempt in range(15):           # up to 45 s for JS challenges
+            if not _is_js_challenge(html):
+                if attempt:
+                    logger.info('JS challenge cleared after ~%d s.', (attempt + 1) * 3)
+                return html
+            logger.debug('JS challenge active (%d/15)…', attempt + 1)
             self._page.wait_for_timeout(SETTLE_MS)
             html = self._page.content()
-            if not _is_akamai_challenge(html):
-                if attempt:
-                    logger.info('Akamai challenge cleared after ~%d s.', (attempt + 1) * 3)
-                return html
-            logger.debug('Challenge still active (%d/15)…', attempt + 1)
+            if _is_hard_blocked(html):
+                raise RuntimeError(
+                    f'Hard bot-block (Access denied) on {url}. '
+                    'Try setting MOBILE_DE_PROXY env var or run again later.'
+                )
 
-        logger.warning('Akamai challenge did not clear after 45 s — returning page as-is.')
-        return self._page.content()
+        logger.warning('JS challenge did not clear after 45 s — returning page as-is.')
+        return html
 
     def _get(self, url: str, params: dict | None = None) -> str:
         time.sleep(self.delay)
@@ -192,29 +219,54 @@ def build_search_params(config: MobileDeSearchConfig) -> dict:
 # ---------------------------------------------------------------------------
 
 def _extract_next_data(html: str) -> dict | None:
-    """Return the parsed __NEXT_DATA__ JSON object, or None if not found."""
+    """
+    Return the page's embedded JSON data, or None if not found.
+
+    Tries in order:
+    1. window.__INITIAL_STATE__ (current mobile.de format)
+    2. <script id="__NEXT_DATA__"> (legacy Next.js format)
+    """
     soup = BeautifulSoup(html, 'html.parser')
+
+    # Current format: window.__INITIAL_STATE__ = {...};
+    for tag in soup.find_all('script'):
+        text = tag.string or ''
+        if 'window.__INITIAL_STATE__' in text:
+            m = re.search(r'window\.__INITIAL_STATE__\s*=\s*', text)
+            if m:
+                try:
+                    data, _ = json.JSONDecoder().raw_decode(text, m.end())
+                    return data
+                except json.JSONDecodeError:
+                    pass
+
+    # Legacy format: <script id="__NEXT_DATA__" type="application/json">
     tag = soup.find('script', {'id': '__NEXT_DATA__'})
     if tag and tag.string:
         try:
             return json.loads(tag.string)
         except json.JSONDecodeError:
             pass
+
     return None
 
 
 def _find_ads_in_json(data: dict) -> list[dict]:
     """
-    Navigate the Next.js props structure to find the list of ad objects.
+    Return the list of ad objects from the page JSON.
 
-    mobile.de path (as observed): props → pageProps → searchResult → ads
-    If mobile.de restructures their JSON, update this function.
+    Tries the current __INITIAL_STATE__ path first, then legacy __NEXT_DATA__ paths.
     """
+    # Current: search → srp → data → searchResults → items
+    try:
+        return data['search']['srp']['data']['searchResults']['items']
+    except (KeyError, TypeError):
+        pass
+    # Legacy: props → pageProps → searchResult → ads
     try:
         return data['props']['pageProps']['searchResult']['ads']
     except (KeyError, TypeError):
         pass
-    # Fallback: try a different common path
     try:
         return data['props']['pageProps']['listings']
     except (KeyError, TypeError):
@@ -223,6 +275,12 @@ def _find_ads_in_json(data: dict) -> list[dict]:
 
 
 def _total_count_from_json(data: dict) -> int | None:
+    # Current __INITIAL_STATE__ path
+    try:
+        return data['search']['srp']['data']['searchResults']['numResultsTotal']
+    except (KeyError, TypeError):
+        pass
+    # Legacy __NEXT_DATA__ path
     try:
         return data['props']['pageProps']['searchResult']['numTotalAds']
     except (KeyError, TypeError):
@@ -233,8 +291,12 @@ def _parse_ad_json(ad: dict) -> dict | None:
     """
     Extract a normalised listing dict from a single ad object in the JSON.
 
-    Field names are based on the mobile.de Next.js API as observed.
-    Update keys here if mobile.de changes their API response shape.
+    Handles both the current __INITIAL_STATE__ format and the legacy
+    __NEXT_DATA__ format.  Key differences in the current format:
+      - make/model are plain strings, not nested dicts
+      - attr dict holds fr (registration), ml (mileage), pw (power), ft (fuel), ecol (colour)
+      - price.grossAmount is an int; no vatDeductible
+      - previewImage + previewThumbnails replace the images array
     """
     listing_id = str(ad.get('id', '')).strip()
     if not listing_id:
@@ -243,66 +305,107 @@ def _parse_ad_json(ad: dict) -> dict | None:
     out = {'listing_id': listing_id}
 
     # URL
-    url_path = ad.get('url') or ad.get('relativeUrl') or ''
+    url_path = ad.get('relativeUrl') or ad.get('url') or ''
     out['source_url'] = urljoin(BASE_URL, url_path) if url_path else ''
 
-    # Make / model / trim — may be nested or flat depending on API version
-    out['make_name'] = (
-        (ad.get('make') or {}).get('name')
-        or ad.get('make')
-        or ''
-    )
-    out['model_name'] = (
-        (ad.get('model') or {}).get('name')
-        or ad.get('model')
-        or ''
-    )
-    out['trim'] = ad.get('version') or ad.get('trim') or ad.get('title', '')
+    # Make / model — current: flat strings; legacy: nested dicts
+    make = ad.get('make') or {}
+    out['make_name'] = make.get('name', '') if isinstance(make, dict) else str(make)
+    model = ad.get('model') or {}
+    out['model_name'] = model.get('name', '') if isinstance(model, dict) else str(model)
+    out['trim'] = ad.get('subTitle') or ad.get('version') or ad.get('trim') or ad.get('title', '')
 
     # Year / first registration
-    reg = ad.get('firstRegistrationDate') or ad.get('firstRegistration') or ''
-    out['first_registration'] = str(reg)[:7]   # keep MM/YYYY or YYYY-MM
+    # Current: attr.fr = "01/2023"; legacy: firstRegistrationDate = "2023-01"
+    attr = ad.get('attr') or {}
+    reg = attr.get('fr') or ad.get('firstRegistrationDate') or ad.get('firstRegistration') or ''
+    out['first_registration'] = str(reg)[:7]
     out['year'] = _year_from_reg(out['first_registration'])
 
     # Price
+    # Current: price.grossAmount (int); legacy: price.amount
     price_obj = ad.get('price') or {}
-    out['price'] = _to_decimal(
-        price_obj.get('amount') or price_obj.get('rawPrice') or ad.get('price')
-    )
-    out['price_vat'] = bool(price_obj.get('vatDeductible'))
+    if isinstance(price_obj, dict):
+        out['price'] = _to_decimal(
+            price_obj.get('grossAmount') or price_obj.get('amount') or price_obj.get('rawPrice')
+        )
+        out['price_vat'] = bool(price_obj.get('vatDeductible'))
+    else:
+        out['price'] = _to_decimal(price_obj)
+        out['price_vat'] = False
     out['price_vat_applicable'] = not bool(ad.get('privateOffer'))
 
-    # Condition
-    out['mileage_km'] = _to_int(ad.get('mileageInKm') or ad.get('mileage'))
+    # Mileage — current: attr.ml = "24.000 km"; _to_int strips non-digits safely
+    out['mileage_km'] = _to_int(attr.get('ml') or ad.get('mileageInKm') or ad.get('mileage'))
 
-    # Specs
+    # Fuel type — current: attr.ft = "Benzin"; legacy: fuelType.value
     fuel_obj = ad.get('fuelType') or {}
-    out['fuel_type'] = (
-        fuel_obj.get('value') if isinstance(fuel_obj, dict) else str(fuel_obj)
+    out['fuel_type'] = attr.get('ft') or (
+        fuel_obj.get('value') if isinstance(fuel_obj, dict) else str(fuel_obj or '')
     )
-    perf = ad.get('power') or ad.get('performance') or {}
-    out['power_hp'] = _to_int(
-        perf.get('ps') or perf.get('hp') if isinstance(perf, dict) else perf
-    )
+
+    # Power — current: attr.pw = "81 kW (110 PS)"; extract PS value
+    pw_raw = attr.get('pw') or ''
+    if pw_raw:
+        ps_m = re.search(r'(\d+)\s*PS', pw_raw, re.IGNORECASE)
+        out['power_hp'] = int(ps_m.group(1)) if ps_m else None
+    else:
+        perf = ad.get('power') or ad.get('performance') or {}
+        out['power_hp'] = _to_int(
+            perf.get('ps') or perf.get('hp') if isinstance(perf, dict) else perf
+        )
+
     out['battery_capacity_kwh'] = _to_decimal(
         (ad.get('battery') or {}).get('capacityInKwh')
     )
-    out['body_type'] = (ad.get('category') or {}).get('name', '') if isinstance(ad.get('category'), dict) else ''
 
-    # Appearance
+    # Body type — current: plain string; legacy: dict
+    cat = ad.get('category') or {}
+    out['body_type'] = cat.get('name', '') if isinstance(cat, dict) else str(cat)
+
+    # Colour — current: attr.ecol; legacy: exteriorColor dict
     color_obj = ad.get('exteriorColor') or {}
-    out['color'] = color_obj.get('colorDescription') or color_obj.get('name', '') if isinstance(color_obj, dict) else ''
+    out['color'] = attr.get('ecol') or (
+        color_obj.get('colorDescription') or color_obj.get('name', '')
+        if isinstance(color_obj, dict) else ''
+    )
     interior_obj = ad.get('interiorColor') or {}
-    out['interior_color'] = interior_obj.get('colorDescription') or interior_obj.get('name', '') if isinstance(interior_obj, dict) else ''
+    out['interior_color'] = (
+        interior_obj.get('colorDescription') or interior_obj.get('name', '')
+        if isinstance(interior_obj, dict) else ''
+    )
 
-    # Images
-    images = ad.get('images') or ad.get('imageUrls') or []
-    out['image_urls'] = [
-        img.get('url') or img if isinstance(img, str) else ''
-        for img in images
+    # Images — current: previewThumbnails (list of dicts with src); legacy: images array
+    # Upgrade all image URLs from thumbnail size to full-size (1600w).
+    preview = ad.get('previewImage') or {}
+    thumb_src = preview.get('src', '') if isinstance(preview, dict) else ''
+    raw_images = ad.get('previewThumbnails') or ad.get('images') or ad.get('imageUrls') or []
+    image_urls = []
+    for img in raw_images:
+        if isinstance(img, str):
+            image_urls.append(_hd_image_url(img))
+        elif isinstance(img, dict):
+            src = img.get('src') or img.get('url') or ''
+            if src:
+                image_urls.append(_hd_image_url(src))
+    out['image_urls'] = [u for u in image_urls if u]
+    out['thumbnail_url'] = _hd_image_url(thumb_src) if thumb_src else (
+        out['image_urls'][0] if out['image_urls'] else ''
+    )
+
+    # Price rating
+    pr = ad.get('priceRating') or {}
+    out['price_rating'] = pr.get('rating', '')
+    raw_thresholds = pr.get('thresholdLabels') or []
+    out['price_rating_thresholds'] = [
+        v for v in (_parse_german_price_str(s) for s in raw_thresholds if isinstance(s, str))
+        if v is not None
     ]
-    out['image_urls'] = [u for u in out['image_urls'] if u]
-    out['thumbnail_url'] = out['image_urls'][0] if out['image_urls'] else ''
+
+    # Seller info — contactInfo.country / contactInfo.sellerType
+    contact = ad.get('contactInfo') or {}
+    out['country'] = contact.get('country', '') or attr.get('cn', '')
+    out['seller_type'] = contact.get('sellerType', '')
 
     # Equipment not available at list level — populated later from detail page
     out['equipment'] = []
@@ -489,6 +592,26 @@ def _parse_price(raw: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
+def _hd_image_url(url: str) -> str:
+    """Upgrade a mobile.de CDN thumbnail URL to full-size (1600w)."""
+    return re.sub(r'rule=mo-\d+w?', 'rule=mo-1600w', url)
+
+
+def _parse_german_price_str(s: str) -> float | None:
+    """Parse a German-formatted price string like '15.900 €' to a float."""
+    cleaned = re.sub(r'[^\d,.]', '', s.strip())
+    if not cleaned:
+        return None
+    if ',' in cleaned:
+        cleaned = cleaned.replace('.', '').replace(',', '.')
+    else:
+        cleaned = cleaned.replace('.', '')
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
 def _digits(value) -> str | None:
     if not value:
         return None
@@ -531,6 +654,20 @@ def _get_or_create_car_model(model_name: str, make: Make | None) -> CarModel | N
     return obj
 
 
+def _download_image(url: str) -> 'django.core.files.base.ContentFile | None':
+    """Download an image URL and return a ContentFile, or None on failure."""
+    from django.core.files.base import ContentFile
+    try:
+        resp = requests.get(url, timeout=20, headers={'User-Agent': HEADERS['User-Agent']})
+        resp.raise_for_status()
+        last_segment = url.split('?')[0].rsplit('/', 1)[-1]
+        ext = last_segment.rsplit('.', 1)[-1] if '.' in last_segment else 'jpg'
+        return ContentFile(resp.content, name=f'img.{ext}')
+    except Exception as exc:
+        logger.warning('Image download failed for %s: %s', url, exc)
+        return None
+
+
 def _upsert_vehicle(listing: dict, config: MobileDeSearchConfig, dry_run: bool):
     listing_id = listing['listing_id']
     make_obj = _get_or_create_make(listing.get('make_name', ''))
@@ -556,15 +693,20 @@ def _upsert_vehicle(listing: dict, config: MobileDeSearchConfig, dry_run: bool):
         'interior_color': listing.get('interior_color', ''),
         'equipment': listing.get('equipment', []),
         'thumbnail_url': listing.get('thumbnail_url', ''),
+        'price_rating': listing.get('price_rating', ''),
+        'price_rating_thresholds': listing.get('price_rating_thresholds', []),
+        'country': listing.get('country', ''),
+        'seller_type': listing.get('seller_type', ''),
         'is_active': True,
     }
 
     if dry_run:
         make_str = listing.get('make_name', '?')
         model_str = listing.get('model_name', '?')
-        logger.info('[DRY] %s %s %s — %s km @ %s €',
+        logger.info('[DRY] %s %s %s — %s km @ %s € [%s/%s]',
                     make_str, model_str, listing.get('trim', ''),
-                    listing.get('mileage_km', '?'), listing.get('price', '?'))
+                    listing.get('mileage_km', '?'), listing.get('price', '?'),
+                    listing.get('seller_type', '?'), listing.get('price_rating', '?'))
         return
 
     vehicle, created = Vehicle.objects.update_or_create(
@@ -572,16 +714,18 @@ def _upsert_vehicle(listing: dict, config: MobileDeSearchConfig, dry_run: bool):
         defaults=defaults,
     )
 
-    # Sync images only on create or when image list changed
+    # Sync images only when the URL set has changed
     image_urls = listing.get('image_urls', [])
     if image_urls:
         existing = list(vehicle.images.values_list('url', flat=True))
         if set(image_urls) != set(existing):
             vehicle.images.all().delete()
-            VehicleImage.objects.bulk_create([
-                VehicleImage(vehicle=vehicle, url=url, order=i)
-                for i, url in enumerate(image_urls)
-            ])
+            for i, url in enumerate(image_urls):
+                content_file = _download_image(url)
+                img = VehicleImage(vehicle=vehicle, url=url, order=i)
+                if content_file:
+                    img.image.save(content_file.name, content_file, save=False)
+                img.save()
 
     action = 'Created' if created else 'Updated'
     logger.info('%s vehicle %s: %s', action, listing_id, vehicle)
@@ -740,7 +884,7 @@ class Command(BaseCommand):
 
         data = _extract_next_data(html)
         if not data:
-            self.stdout.write(self.style.ERROR('  [debug] No __NEXT_DATA__ found in page.'))
+            self.stdout.write(self.style.ERROR('  [debug] No __INITIAL_STATE__ / __NEXT_DATA__ found in page.'))
             return
 
         json_path = pathlib.Path(f'/tmp/mobile_de_debug_{slug}.json')

@@ -1,6 +1,13 @@
+import uuid
+
 from django.db import models
 from django.utils.text import slugify
 from catalog.models import Variant
+
+
+def _vehicle_image_upload_path(instance, filename):
+    ext = filename.rsplit('.', 1)[-1] if '.' in filename else 'jpg'
+    return f'vehicle_images/{uuid.uuid4().hex}.{ext}'
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +210,20 @@ class Vehicle(models.Model):
     # Quick-access thumbnail — set to the first image URL during scraping
     thumbnail_url = models.URLField(max_length=500, blank=True)
 
+    # Market pricing signal from mobile.de
+    price_rating = models.CharField(
+        max_length=30, blank=True,
+        help_text='e.g. GOOD_PRICE, FAIR_PRICE, HIGH_PRICE',
+    )
+    price_rating_thresholds = models.JSONField(
+        default=list, blank=True,
+        help_text='Ordered list of threshold prices in EUR as floats',
+    )
+
+    # Seller info
+    country = models.CharField(max_length=5, blank=True, help_text='Seller country code, e.g. DE')
+    seller_type = models.CharField(max_length=20, blank=True, help_text='DEALER or PRIVATE')
+
     # Fleet management fields
     plate_number = models.CharField(max_length=20, unique=True, null=True, blank=True)
     vin = models.CharField(max_length=17, unique=True, null=True, blank=True)
@@ -252,6 +273,9 @@ class VehicleImage(models.Model):
     An image belonging to a Vehicle, ordered by the `order` field.
     The image with order=0 is treated as the primary image;
     thumbnail_url on the parent Vehicle caches that first image URL.
+
+    `url` holds the original source URL (e.g. mobile.de CDN).
+    `image` holds a locally downloaded copy (populated by the scraper).
     """
 
     vehicle = models.ForeignKey(
@@ -260,6 +284,11 @@ class VehicleImage(models.Model):
         related_name='images',
     )
     url = models.URLField(max_length=500)
+    image = models.ImageField(
+        upload_to=_vehicle_image_upload_path,
+        null=True, blank=True,
+        help_text='Locally downloaded copy of the source image.',
+    )
     order = models.PositiveSmallIntegerField(default=0)
 
     class Meta:
