@@ -6,19 +6,21 @@ from .models import Vehicle, VehicleImage, Make, CarModel
 class VehicleImageSerializer(serializers.ModelSerializer):
     class Meta:
         model = VehicleImage
-        fields = ['id', 'url', 'order']
-
-
-class MakeSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Make
-        fields = ['id', 'name', 'slug', 'mobile_de_id']
+        fields = ['id', 'url', 'image', 'order']
 
 
 class CarModelSerializer(serializers.ModelSerializer):
     class Meta:
         model = CarModel
-        fields = ['id', 'make', 'name', 'slug', 'mobile_de_id']
+        fields = ['id', 'name', 'slug', 'mobile_de_id']
+
+
+class MakeSerializer(serializers.ModelSerializer):
+    models = CarModelSerializer(source='car_models', many=True, read_only=True)
+
+    class Meta:
+        model = Make
+        fields = ['id', 'name', 'slug', 'mobile_de_id', 'models']
 
 
 class VehicleSerializer(serializers.ModelSerializer):
@@ -36,7 +38,7 @@ class VehicleSerializer(serializers.ModelSerializer):
             'display_name', 'trim', 'year', 'first_registration', 'body_type',
             'listing_id', 'source_url',
             # Pricing
-            'price', 'price_vat', 'price_vat_applicable',
+            'price', 'price_vat', 'price_vat_exempt',
             # Condition
             'mileage_km', 'mileage_updated_at',
             # Specs
@@ -44,6 +46,8 @@ class VehicleSerializer(serializers.ModelSerializer):
             # Appearance
             'color', 'color_code', 'interior_color', 'equipment', 'thumbnail_url',
             'images',
+            # Market / seller
+            'price_rating', 'price_rating_thresholds', 'country', 'seller_type',
             # Fleet
             'plate_number', 'vin', 'status', 'purchase_date', 'purchase_price', 'notes',
             'is_active',

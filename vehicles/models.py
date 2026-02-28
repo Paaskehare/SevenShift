@@ -184,9 +184,9 @@ class Vehicle(models.Model):
         default=False,
         help_text='True if the listed price already includes VAT.',
     )
-    price_vat_applicable = models.BooleanField(
-        default=True,
-        help_text='False for private sellers where VAT does not apply.',
+    price_vat_exempt = models.BooleanField(
+        default=False,
+        help_text='True for private sellers where VAT does not apply.',
     )
 
     # Condition

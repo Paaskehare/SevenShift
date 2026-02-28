@@ -6,4 +6,5 @@ export const vehiclesApi = {
   create: (data) => apiClient.post('/vehicles/', data),
   update: (id, data) => apiClient.patch(`/vehicles/${id}/`, data),
   remove: (id) => apiClient.delete(`/vehicles/${id}/`),
+  getMakes: () => apiClient.get('/vehicles/makes/'),
 }

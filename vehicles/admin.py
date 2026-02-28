@@ -30,7 +30,7 @@ class MobileDeSearchConfigAdmin(admin.ModelAdmin):
 class VehicleImageInline(admin.TabularInline):
     model = VehicleImage
     extra = 0
-    fields = ['url', 'order']
+    fields = ['image', 'order']
     ordering = ['order']
 
 
@@ -51,7 +51,7 @@ class VehicleAdmin(admin.ModelAdmin):
             'classes': ['collapse'],
         }),
         ('Pricing', {
-            'fields': ['price', 'price_vat', 'price_vat_applicable', 'purchase_price', 'purchase_date'],
+            'fields': ['price', 'price_vat', 'price_vat_exempt', 'purchase_price', 'purchase_date'],
         }),
         ('Condition', {
             'fields': ['mileage_km', 'mileage_updated_at', 'fuel_type', 'power_hp', 'battery_capacity_kwh'],

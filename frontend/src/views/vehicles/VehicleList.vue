@@ -10,8 +10,10 @@ const count = ref(0)
 const loading = ref(false)
 const search = ref('')
 const statusFilter = ref('')
+const makeFilter = ref('')
 const page = ref(1)
 const pageSize = 25
+const makes = ref([])
 
 const statusOptions = [
   { value: '', label: 'All statuses' },
@@ -30,12 +32,19 @@ const statusColors = {
   retired: 'bg-gray-100 text-gray-500',
 }
 
+const priceRatingColors = {
+  GOOD_PRICE: 'bg-green-100 text-green-700',
+  FAIR_PRICE: 'bg-amber-100 text-amber-700',
+  HIGH_PRICE: 'bg-red-100 text-red-700',
+}
+
 async function fetchVehicles() {
   loading.value = true
   try {
     const { data } = await vehiclesApi.list({
       search: search.value || undefined,
       status: statusFilter.value || undefined,
+      make: makeFilter.value || undefined,
       page: page.value,
       page_size: pageSize,
     })
@@ -46,9 +55,14 @@ async function fetchVehicles() {
   }
 }
 
-watch([search, statusFilter], () => { page.value = 1; fetchVehicles() })
+watch([search, statusFilter, makeFilter], () => { page.value = 1; fetchVehicles() })
 watch(page, fetchVehicles)
-onMounted(fetchVehicles)
+
+onMounted(async () => {
+  fetchVehicles()
+  const { data } = await vehiclesApi.getMakes()
+  makes.value = data
+})
 
 const totalPages = () => Math.ceil(count.value / pageSize)
 </script>
@@ -78,7 +92,11 @@ const totalPages = () => Math.ceil(count.value / pageSize)
           class="form-input pl-9"
         />
       </div>
-      <select v-model="statusFilter" class="form-input sm:w-48">
+      <select v-model="makeFilter" class="form-input sm:w-44">
+        <option value="">All makes</option>
+        <option v-for="m in makes" :key="m.id" :value="m.id">{{ m.name }}</option>
+      </select>
+      <select v-model="statusFilter" class="form-input sm:w-44">
         <option v-for="opt in statusOptions" :key="opt.value" :value="opt.value">
           {{ opt.label }}
         </option>
@@ -91,19 +109,20 @@ const totalPages = () => Math.ceil(count.value / pageSize)
         <table class="w-full text-sm">
           <thead class="bg-gray-50 border-b border-gray-200">
             <tr>
+              <th class="w-16 px-3 py-3"></th>
               <th class="text-left px-4 py-3 font-medium text-gray-600">Vehicle</th>
-              <th class="text-left px-4 py-3 font-medium text-gray-600">Plate</th>
               <th class="text-left px-4 py-3 font-medium text-gray-600">Year</th>
               <th class="text-left px-4 py-3 font-medium text-gray-600">Mileage</th>
+              <th class="text-left px-4 py-3 font-medium text-gray-600">Price</th>
               <th class="text-left px-4 py-3 font-medium text-gray-600">Status</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-gray-100">
             <tr v-if="loading">
-              <td colspan="5" class="px-4 py-8 text-center text-gray-400">Loading…</td>
+              <td colspan="6" class="px-4 py-8 text-center text-gray-400">Loading…</td>
             </tr>
             <tr v-else-if="!vehicles.length">
-              <td colspan="5" class="px-4 py-8 text-center text-gray-400">No vehicles found.</td>
+              <td colspan="6" class="px-4 py-8 text-center text-gray-400">No vehicles found.</td>
             </tr>
             <tr
               v-for="v in vehicles"
@@ -111,10 +130,33 @@ const totalPages = () => Math.ceil(count.value / pageSize)
               class="hover:bg-gray-50 cursor-pointer transition-colors"
               @click="router.push({ name: 'VehicleDetail', params: { id: v.id } })"
             >
-              <td class="px-4 py-3 font-medium text-gray-900">{{ v.display_name }}</td>
-              <td class="px-4 py-3 text-gray-600 font-mono">{{ v.plate_number }}</td>
-              <td class="px-4 py-3 text-gray-600">{{ v.year }}</td>
-              <td class="px-4 py-3 text-gray-600">{{ v.mileage_km.toLocaleString() }} km</td>
+              <td class="px-3 py-2">
+                <img
+                  v-if="v.thumbnail_url"
+                  :src="v.thumbnail_url"
+                  class="h-10 w-14 object-cover rounded"
+                  loading="lazy"
+                />
+                <div v-else class="h-10 w-14 bg-gray-100 rounded" />
+              </td>
+              <td class="px-4 py-3">
+                <p class="font-medium text-gray-900">{{ v.display_name }}</p>
+                <p v-if="v.plate_number" class="text-xs text-gray-400 font-mono">{{ v.plate_number }}</p>
+              </td>
+              <td class="px-4 py-3 text-gray-600">{{ v.year ?? '—' }}</td>
+              <td class="px-4 py-3 text-gray-600">
+                {{ v.mileage_km != null ? v.mileage_km.toLocaleString() + ' km' : '—' }}
+              </td>
+              <td class="px-4 py-3">
+                <template v-if="v.price">
+                  <p class="text-gray-900 font-medium">€{{ Number(v.price).toLocaleString() }}</p>
+                  <span
+                    v-if="v.price_rating"
+                    :class="['text-xs px-1.5 py-0.5 rounded font-medium', priceRatingColors[v.price_rating] || 'bg-gray-100 text-gray-500']"
+                  >{{ v.price_rating.replace(/_/g, ' ') }}</span>
+                </template>
+                <span v-else class="text-gray-400">—</span>
+              </td>
               <td class="px-4 py-3">
                 <span :class="['badge capitalize', statusColors[v.status] || 'bg-gray-100 text-gray-600']">
                   {{ v.status.replace('_', ' ') }}

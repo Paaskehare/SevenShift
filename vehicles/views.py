@@ -1,7 +1,14 @@
-from rest_framework import viewsets
+from rest_framework import viewsets, mixins
 from rest_framework.permissions import IsAuthenticated
-from .models import Vehicle
-from .serializers import VehicleSerializer
+from .models import Vehicle, Make
+from .serializers import VehicleSerializer, MakeSerializer
+
+
+class MakeViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+    queryset = Make.objects.prefetch_related('car_models').order_by('name')
+    serializer_class = MakeSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
 
 
 class VehicleViewSet(viewsets.ModelViewSet):

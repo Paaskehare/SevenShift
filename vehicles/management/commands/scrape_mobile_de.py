@@ -333,7 +333,7 @@ def _parse_ad_json(ad: dict) -> dict | None:
     else:
         out['price'] = _to_decimal(price_obj)
         out['price_vat'] = False
-    out['price_vat_applicable'] = not bool(ad.get('privateOffer'))
+    out['price_vat_exempt'] = bool(ad.get('privateOffer'))
 
     # Mileage — current: attr.ml = "24.000 km"; _to_int strips non-digits safely
     out['mileage_km'] = _to_int(attr.get('ml') or ad.get('mileageInKm') or ad.get('mileage'))
@@ -468,7 +468,7 @@ def _parse_card_html(card) -> dict | None:
         'year': _year_from_reg(_extract_reg(details_text)),
         'price': _parse_price(price_raw),
         'price_vat': False,
-        'price_vat_applicable': True,
+        'price_vat_exempt': False,
         'mileage_km': _extract_mileage(details_text),
         'fuel_type': '',
         'power_hp': _extract_power(details_text),
@@ -684,7 +684,7 @@ def _upsert_vehicle(listing: dict, config: MobileDeSearchConfig, dry_run: bool):
         'body_type': listing.get('body_type', ''),
         'price': listing.get('price'),
         'price_vat': listing.get('price_vat', False),
-        'price_vat_applicable': listing.get('price_vat_applicable', True),
+        'price_vat_exempt': listing.get('price_vat_exempt', False),
         'mileage_km': listing.get('mileage_km'),
         'fuel_type': listing.get('fuel_type', ''),
         'power_hp': listing.get('power_hp'),
