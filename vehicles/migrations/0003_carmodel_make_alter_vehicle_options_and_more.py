@@ -8,7 +8,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('catalog', '0003_generation_delete_trim_alter_variant_options_and_more'),
-        ('vehicles', '0002_remove_vehicle_trim_vehicle_variant'),
+        ('vehicles', '0001_initial'),
     ]
 
     operations = [
