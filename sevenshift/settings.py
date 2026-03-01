@@ -60,10 +60,20 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'sevenshift.wsgi.application'
 
+_db_engine = config('DB_ENGINE', default='django.db.backends.sqlite3')
+
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': _db_engine,
+        'NAME': config('DB_NAME', default=str(BASE_DIR / 'db.sqlite3')),
+        'USER': config('DB_USER', default=''),
+        'PASSWORD': config('DB_PASSWORD', default=''),
+        'HOST': config('DB_HOST', default=''),
+        'PORT': config('DB_PORT', default=''),
+        **(
+            {'OPTIONS': {'charset': 'utf8mb4'}}
+            if _db_engine == 'django.db.backends.mysql' else {}
+        ),
     }
 }
 

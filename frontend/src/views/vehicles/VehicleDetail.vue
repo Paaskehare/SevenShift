@@ -202,9 +202,9 @@ onMounted(async () => {
               <dt class="text-gray-500">Transmission</dt>
               <dd class="text-gray-900 font-medium">{{ vehicle.variant_detail.transmission }}</dd>
             </div>
-            <div v-if="vehicle.variant_detail.drive" class="text-sm">
-              <dt class="text-gray-500">Drive</dt>
-              <dd class="text-gray-900 font-medium">{{ vehicle.variant_detail.drive }}</dd>
+            <div v-if="vehicle.variant_detail.drivetrain" class="text-sm">
+              <dt class="text-gray-500">Drivetrain</dt>
+              <dd class="text-gray-900 font-medium">{{ vehicle.variant_detail.drivetrain }}</dd>
             </div>
           </dl>
           <RouterLink

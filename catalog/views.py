@@ -32,5 +32,5 @@ class VariantViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Variant.objects.select_related('generation__car_model__make').all()
     serializer_class = VariantSerializer
     permission_classes = [IsAuthenticated]
-    filterset_fields = ['generation', 'fuel_type', 'transmission', 'drive', 'body_type']
+    filterset_fields = ['generation', 'fuel_type', 'transmission', 'drivetrain', 'body_type']
     search_fields = ['variant', 'modification', 'generation__car_model__name', 'generation__car_model__make__name']

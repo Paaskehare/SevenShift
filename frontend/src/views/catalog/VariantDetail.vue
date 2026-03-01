@@ -60,7 +60,7 @@ function specRow(label, value, unit = '') {
               specRow('Torque', variant.torque_nm, ' Nm'),
               specRow('Transmission', variant.transmission),
               specRow('Gears', variant.number_of_gears),
-              specRow('Drive', variant.drive),
+              specRow('Drive', variant.drivetrain),
             ].filter(Boolean)" :key="row.label">
               <div class="flex justify-between text-sm">
                 <dt class="text-gray-500">{{ row.label }}</dt>

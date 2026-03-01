@@ -87,7 +87,7 @@ class Variant(models.Model):
     torque_nm = models.PositiveIntegerField(blank=True, null=True, help_text="Nm")
     transmission = models.CharField(max_length=50, blank=True, null=True)
     number_of_gears = models.PositiveSmallIntegerField(blank=True, null=True)
-    drive = models.CharField(max_length=20, blank=True, null=True)
+    drivetrain = models.CharField(max_length=20, blank=True, null=True)
 
     # Performance
     acceleration_0_100 = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True, help_text="Seconds (0–100 km/h)")

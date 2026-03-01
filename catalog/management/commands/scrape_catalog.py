@@ -175,6 +175,26 @@ DRIVE_MAP = {
 }
 
 _YEAR_RE = re.compile(r'\b(\d{4})\b')
+_HP_RE = re.compile(r'\((\d+)\s*Hp\)', re.IGNORECASE)
+_KWH_RE = re.compile(r'(\d+(?:\.\d+)?)\s*kWh', re.IGNORECASE)
+
+
+def _parse_variant_name(name: str) -> dict:
+    """Extract power_hp and gross_battery_capacity embedded in the variant name string.
+
+    Example: "CONCEPT AMG GT XX 114 kWh (1360 Hp) 4MATIC+"
+              → {'power_hp': 1360, 'gross_battery_capacity': 114.0}
+    """
+    specs = {}
+    if not name:
+        return specs
+    m = _HP_RE.search(name)
+    if m:
+        specs['power_hp'] = int(m.group(1))
+    m = _KWH_RE.search(name)
+    if m:
+        specs['gross_battery_capacity'] = float(m.group(1))
+    return specs
 
 
 def _parse_generation_years(name: str):
@@ -225,7 +245,7 @@ def _parse_specs(d: dict) -> dict:
         specs['torque_nm'] = _int(_before(d['Torque'], '/', '@'))
 
     if d.get('Drive wheel'):
-        specs['drive'] = DRIVE_MAP.get(d['Drive wheel'], d['Drive wheel'])
+        specs['drivetrain'] = DRIVE_MAP.get(d['Drive wheel'], d['Drive wheel'])
 
     # Transmission — manual wins if both present; gearbox field is a tiebreaker
     if d.get('Number of Gears (manual transmission)'):
@@ -270,6 +290,11 @@ def _parse_specs(d: dict) -> dict:
     # Electric
     if d.get('All-electric range'):
         specs['all_electric_range'] = _int(d['All-electric range'])
+
+    for label in ('Gross battery capacity', 'Net battery capacity', 'Battery capacity'):
+        if d.get(label):
+            specs['gross_battery_capacity'] = _float(_before(d[label], '/', ' '))
+            break
 
     if d.get('Average Energy consumption'):
         specs['average_energy_consumption'] = _float(_before(d['Average Energy consumption'], '/', '-'))
@@ -469,6 +494,14 @@ class Command(BaseCommand):
             return None
 
         parsed = _parse_specs(raw_specs)
+
+        # Fallback: if the API didn't return power or battery, parse them from
+        # the variant name string (e.g. "AMG GT XX 114 kWh (1360 Hp) 4MATIC+")
+        if not parsed.get('power_hp') or not parsed.get('gross_battery_capacity'):
+            for key, val in _parse_variant_name(name or '').items():
+                if val is not None and not parsed.get(key):
+                    parsed[key] = val
+
         Variant.objects.update_or_create(
             data_id=data_id,
             defaults={

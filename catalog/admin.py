@@ -26,7 +26,7 @@ class GenerationAdmin(admin.ModelAdmin):
 @admin.register(Variant)
 class VariantAdmin(admin.ModelAdmin):
     list_display = ['generation', 'variant', 'modification', 'body_type', 'power_hp', 'fuel_type', 'data_id']
-    list_filter = ['body_type', 'fuel_type', 'transmission', 'drive', 'electric_motor_location', 'generation__car_model__make']
+    list_filter = ['body_type', 'fuel_type', 'transmission', 'drivetrain', 'electric_motor_location', 'generation__car_model__make']
     search_fields = ['variant', 'modification', 'generation__name', 'generation__car_model__name', 'generation__car_model__make__name']
     raw_id_fields = ['generation']
     fieldsets = (
@@ -34,7 +34,7 @@ class VariantAdmin(admin.ModelAdmin):
             'fields': ('generation', 'variant', 'modification', 'body_type', 'seats', 'doors', 'data_id', 'scraped_at'),
         }),
         ('Engine & Drivetrain', {
-            'fields': ('fuel_type', 'engine_displacement_cc', 'engine_cylinders', 'power_hp', 'power_kw', 'torque_nm', 'transmission', 'drive'),
+            'fields': ('fuel_type', 'engine_displacement_cc', 'engine_cylinders', 'power_hp', 'power_kw', 'torque_nm', 'transmission', 'drivetrain'),
         }),
         ('Performance & Economy', {
             'fields': ('acceleration_0_100', 'top_speed_kmh', 'fuel_consumption_l100km', 'co2_g_km'),

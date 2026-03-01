@@ -5,7 +5,7 @@ from .models import Make, CarModel, Generation, Variant
 class VariantListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Variant
-        fields = ['id', 'variant', 'modification', 'body_type', 'fuel_type', 'power_hp', 'transmission', 'drive']
+        fields = ['id', 'variant', 'modification', 'body_type', 'fuel_type', 'power_hp', 'transmission', 'drivetrain']
 
 
 class VariantSerializer(serializers.ModelSerializer):

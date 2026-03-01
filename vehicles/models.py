@@ -1,13 +1,68 @@
 import uuid
 
 from django.db import models
+from django.db.models.signals import pre_save
+from django.dispatch import receiver
 from django.utils.text import slugify
+from django.utils.translation import gettext_lazy as _
 from catalog.models import Variant
 
 
 def _vehicle_image_upload_path(instance, filename):
     ext = filename.rsplit('.', 1)[-1] if '.' in filename else 'jpg'
     return f'vehicle_images/{uuid.uuid4().hex}.{ext}'
+
+
+def _page_cache_upload_path(instance, filename):
+    if instance.page_type == 'detail':
+        return f'mobile_de_cache/detail/{filename}'
+    return f'mobile_de_cache/search/{filename}'
+
+
+# ---------------------------------------------------------------------------
+# mobile.de HTML page cache
+# ---------------------------------------------------------------------------
+
+class MobileDePageCache(models.Model):
+    """
+    Stores raw HTML dumps of scraped mobile.de pages.
+
+    Detail pages are keyed by listing_id and cached indefinitely — the scraper
+    skips re-downloading a detail page if a record already exists.
+
+    Search result pages are always re-fetched on each run (to pick up new
+    listings) but overwritten here so you can replay/inspect the last result set.
+    """
+
+    PAGE_TYPE_CHOICES = [('search', 'Search result'), ('detail', 'Ad detail')]
+
+    url_key = models.CharField(
+        max_length=64, unique=True, db_index=True,
+        help_text=(
+            'Stable cache key. Detail pages: "detail-{listing_id}". '
+            'Search pages: MD5 of the normalised URL (sorted params).'
+        ),
+    )
+    listing_id = models.CharField(
+        max_length=20, blank=True, db_index=True,
+        help_text='mobile.de ad ID — only set for detail pages.',
+    )
+    page_type = models.CharField(max_length=10, choices=PAGE_TYPE_CHOICES)
+    source_url = models.URLField(max_length=2000, blank=True)
+    html_file = models.FileField(
+        upload_to=_page_cache_upload_path,
+        help_text='Stored HTML dump of the scraped page.',
+    )
+    scraped_at = models.DateTimeField()
+
+    class Meta:
+        verbose_name = 'mobile.de Page Cache'
+        verbose_name_plural = 'mobile.de Page Cache'
+        ordering = ['-scraped_at']
+
+    def __str__(self):
+        label = self.listing_id or self.url_key[:12]
+        return f'{self.page_type} {label} @ {self.scraped_at:%Y-%m-%d %H:%M}'
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +231,24 @@ class Vehicle(models.Model):
     trim = models.CharField(max_length=300, blank=True)
     year = models.PositiveSmallIntegerField(null=True, blank=True)
     first_registration = models.CharField(max_length=10, blank=True, help_text='MM/YYYY')
-    body_type = models.CharField(max_length=50, blank=True)
+    mobile_body_type = models.CharField(max_length=100, blank=True, help_text='Raw body type string from mobile.de, e.g. "SUV / Geländewagen"')
+    body_type = models.CharField(max_length=100, blank=True, help_text='Normalized catalog slug, e.g. "suv"')
+    TRANSMISSION_CHOICES = (
+        ('automatic', _('Automatic')),
+        ('manual', _('Manual')),
+    )
+
+    DRIVETRAIN_CHOICES = (
+        ('fwd', _('Front-Wheel Drive')),
+        ('rwd', _('Rear-Wheel Drive')),
+        ('awd', _('All-Wheel Drive')),
+    )
+
+    transmission = models.CharField(choices=TRANSMISSION_CHOICES, max_length=16, blank=True, default='automatic')
+    transmission_type = models.CharField(max_length=80, blank=True)
+    drivetrain = models.CharField(choices=DRIVETRAIN_CHOICES, max_length=3, blank=True)
+    num_gears = models.PositiveSmallIntegerField(null=True, blank=True)
+    num_doors = models.PositiveSmallIntegerField(null=True, blank=True)
 
     # Pricing
     price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
@@ -196,6 +268,7 @@ class Vehicle(models.Model):
     # Technical specs
     fuel_type = models.CharField(max_length=50, blank=True)
     power_hp = models.PositiveSmallIntegerField(null=True, blank=True)
+    displacement_cc = models.PositiveIntegerField(null=True, blank=True, help_text='Engine displacement in cc')
     battery_capacity_kwh = models.DecimalField(
         max_digits=6, decimal_places=1, null=True, blank=True,
         help_text='Only populated for electric/hybrid vehicles.',
@@ -298,3 +371,16 @@ class VehicleImage(models.Model):
 
     def __str__(self):
         return f'Image {self.order} – {self.vehicle}'
+
+
+# ---------------------------------------------------------------------------
+# Signals
+# ---------------------------------------------------------------------------
+
+@receiver(pre_save, sender=Vehicle)
+def vehicle_pre_save(sender, instance, **kwargs):
+    if not instance.pk:
+        return  # new instance — no images can exist yet
+    first = instance.images.order_by('order').first()
+    if first and first.image:
+        instance.thumbnail_url = first.image.url

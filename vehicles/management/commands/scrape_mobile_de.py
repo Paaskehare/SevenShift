@@ -36,6 +36,12 @@ returned.  Set MOBILE_DE_PROXY env var to a proxy URL to route requests
 through a proxy (e.g. http://user:pass@host:port).
 """
 
+"""
+ChatGPT AI Prompt:
+Using the provided image as reference, extract the exact same vehicle (do not redesign or change the model, trim, wheels, color, or body shape). Remove the background completely and place the car on a pure white seamless studio background. Rotate the vehicle so it faces toward the camera at a 20-degree front three-quarter angle to the left. Keep realistic proportions and geometry. Apply soft, diffused studio lighting with natural reflections. Add a subtle soft shadow under the car. Blur/censor the license plate, including the text in the plate rim. Do not add text, logos, branding, or additional design changes.
+"""
+
+import hashlib
 import json
 import logging
 import os
@@ -52,7 +58,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from vehicles.models import (
-    Make, CarModel, MobileDeSearchConfig, Vehicle, VehicleImage,
+    Make, CarModel, MobileDePageCache, MobileDeSearchConfig, Vehicle, VehicleImage,
 )
 
 logger = logging.getLogger(__name__)
@@ -355,13 +361,57 @@ def _parse_ad_json(ad: dict) -> dict | None:
             perf.get('ps') or perf.get('hp') if isinstance(perf, dict) else perf
         )
 
-    out['battery_capacity_kwh'] = _to_decimal(
+    _bat = (
         (ad.get('battery') or {}).get('capacityInKwh')
+        or (ad.get('battery') or {}).get('capacity')
+        or (ad.get('electricDrive') or {}).get('batteryCapacityInKwh')
+        or (ad.get('electricDrive') or {}).get('batteryCapacity')
+        or (ad.get('electricRange') or {}).get('batteryCapacityInKwh')
+        or attr.get('bk')  # battery kWh shorthand in current attr format
     )
+    out['battery_capacity_kwh'] = _to_decimal(_bat)
+
+    # Displacement — current: attr.di = "1.968 ccm"; legacy: cubicCapacity int
+    di_raw = (
+        attr.get('di')
+        or ad.get('cubicCapacity')
+        or (ad.get('engineDisplacement') or {}).get('value')
+        or ad.get('displacement')
+    )
+    out['displacement_cc'] = _to_int(di_raw)
+
+    # Transmission — current: attr.tr = "Automatik" / "Schaltgetriebe"; legacy: transmission/gearbox dict
+    tr_raw = attr.get('tr') or ''
+    if not tr_raw:
+        tr_obj = ad.get('transmission') or ad.get('gearbox') or {}
+        tr_raw = tr_obj.get('name', '') if isinstance(tr_obj, dict) else str(tr_obj or '')
+    out['transmission_type'] = tr_raw
+    tr_lower = tr_raw.lower()
+    if 'automat' in tr_lower or 'dsg' in tr_lower or 'cvt' in tr_lower or 'tiptronic' in tr_lower:
+        out['transmission'] = 'automatic'
+    elif 'schalt' in tr_lower or 'manual' in tr_lower:
+        out['transmission'] = 'manual'
+    else:
+        out['transmission'] = ''
+
+    # Gears — current: attr.g = "7"; legacy: numGears
+    out['num_gears'] = _to_int(attr.get('g') or ad.get('numGears') or ad.get('numberOfGears'))
+
+    # Doors — current: attr.dr = "4/5"; extract first digit; legacy: numDoors / doors
+    dr_raw = attr.get('dr') or ad.get('numDoors') or ad.get('doors') or ad.get('numberOfDoors')
+    out['num_doors'] = _to_int(str(dr_raw).split('/')[0]) if dr_raw is not None else None
+
+    # Drivetrain — current: wheelDrive dict or attr.drv; legacy: wheelDrive / driveType
+    wd_obj = ad.get('wheelDrive') or ad.get('driveType') or {}
+    wd_raw = (
+        attr.get('drv')
+        or (wd_obj.get('value') or wd_obj.get('name') if isinstance(wd_obj, dict) else str(wd_obj or ''))
+    )
+    out['drivetrain'] = _parse_drivetrain(wd_raw)
 
     # Body type — current: plain string; legacy: dict
     cat = ad.get('category') or {}
-    out['body_type'] = cat.get('name', '') if isinstance(cat, dict) else str(cat)
+    out['mobile_body_type'] = cat.get('name', '') if isinstance(cat, dict) else str(cat)
 
     # Colour — current: attr.ecol; legacy: exteriorColor dict
     color_obj = ad.get('exteriorColor') or {}
@@ -389,9 +439,11 @@ def _parse_ad_json(ad: dict) -> dict | None:
             if src:
                 image_urls.append(_hd_image_url(src))
     out['image_urls'] = [u for u in image_urls if u]
-    out['thumbnail_url'] = _hd_image_url(thumb_src) if thumb_src else (
-        out['image_urls'][0] if out['image_urls'] else ''
-    )
+    hd_thumb = _hd_image_url(thumb_src) if thumb_src else ''
+    # Always include the preview image if it isn't already in the gallery list
+    if hd_thumb and hd_thumb not in out['image_urls']:
+        out['image_urls'].insert(0, hd_thumb)
+    out['thumbnail_url'] = hd_thumb or (out['image_urls'][0] if out['image_urls'] else '')
 
     # Price rating
     pr = ad.get('priceRating') or {}
@@ -409,6 +461,12 @@ def _parse_ad_json(ad: dict) -> dict | None:
 
     # Equipment not available at list level — populated later from detail page
     out['equipment'] = []
+
+    # Fallback: extract battery size from the trim string (e.g. "EQS 450+ 108 kWh")
+    if not out.get('battery_capacity_kwh') and out.get('trim'):
+        m = re.search(r'(\d+(?:\.\d+)?)\s*kWh', out['trim'], re.IGNORECASE)
+        if m:
+            out['battery_capacity_kwh'] = _to_decimal(m.group(1))
 
     return out
 
@@ -473,7 +531,8 @@ def _parse_card_html(card) -> dict | None:
         'fuel_type': '',
         'power_hp': _extract_power(details_text),
         'battery_capacity_kwh': None,
-        'body_type': '',
+        'mobile_body_type': '',
+        'drivetrain': '',
         'color': '',
         'interior_color': '',
         'image_urls': [img['src'] for img in card.select('img[src]') if img.get('src')],
@@ -521,12 +580,27 @@ def _parse_detail_page(html: str, base: dict) -> dict:
         label = _text(label_el).lower()
         val_el = label_el.find_next_sibling()
         val = _text(val_el) if val_el else ''
+        if 'antrieb' in label or 'drive wheel' in label or 'drivetrain' in label:
+            base['drivetrain'] = _parse_drivetrain(val)
+        if 'hubraum' in label or 'displacement' in label or 'cubic' in label:
+            base['displacement_cc'] = _to_int(val)
         if 'batterie' in label or 'battery' in label or 'akku' in label:
-            base['battery_capacity_kwh'] = _to_decimal(_digits(val))
+            base['battery_capacity_kwh'] = _to_decimal(val)
         if 'innenfarbe' in label or 'interior' in label:
             base['interior_color'] = val
         if 'karosserie' in label or 'body' in label:
-            base['body_type'] = val
+            base['mobile_body_type'] = val
+        if 'getriebe' in label or 'transmission' in label or 'gearbox' in label:
+            base['transmission_type'] = val
+            val_lower = val.lower()
+            if 'automat' in val_lower or 'dsg' in val_lower:
+                base['transmission'] = 'automatic'
+            elif 'schalt' in val_lower or 'manual' in val_lower:
+                base['transmission'] = 'manual'
+        if 'gang' in label or 'gears' in label or 'gänge' in label:
+            base['num_gears'] = _to_int(val)
+        if 'türen' in label or 'doors' in label or 'tür' in label:
+            base['num_doors'] = _to_int(val.split('/')[0])
 
     return base
 
@@ -551,6 +625,22 @@ def _extract_equipment_json(ad: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 # Value helpers
 # ---------------------------------------------------------------------------
+
+# mobile.de drivetrain string (German/English) → canonical slug
+_DRIVETRAIN_MAP: dict[str, str] = {
+    'frontantrieb': 'fwd', 'frontaxle': 'fwd', 'front': 'fwd', 'fwd': 'fwd',
+    'heckantrieb': 'rwd', 'rearaxle': 'rwd', 'rear': 'rwd', 'rwd': 'rwd',
+    'allradantrieb': 'awd', 'allrad': 'awd', '4x4': 'awd', '4wd': 'awd',
+    'allwheeldrive': 'awd', 'awd': 'awd',
+}
+
+
+def _parse_drivetrain(raw) -> str:
+    if not raw:
+        return ''
+    key = re.sub(r'[\s\-_]', '', str(raw).lower())
+    return _DRIVETRAIN_MAP.get(key, '')
+
 
 def _text(el) -> str:
     return el.get_text(strip=True) if el else ''
@@ -637,6 +727,78 @@ def _to_decimal(value):
 
 
 # ---------------------------------------------------------------------------
+# Page cache helpers
+# ---------------------------------------------------------------------------
+
+def _search_url_key(params: dict, page: int) -> str:
+    """Stable MD5 key for a search page request (same params as MobileDeClient.search_page)."""
+    full_params = {**params, 'dam': 'false', 's': 'Car', 'vc': 'Car',
+                   'pageNumber': str(page), 'isSearchRequest': 'true'}
+    sorted_query = urlencode(sorted(full_params.items()))
+    url = f'{BASE_URL}{SEARCH_PATH}?{sorted_query}'
+    return hashlib.md5(url.encode()).hexdigest()
+
+
+def _check_detail_cache(listing_id: str) -> str | None:
+    """Return the cached HTML for a detail page, or None if not yet cached."""
+    cache = MobileDePageCache.objects.filter(listing_id=listing_id, page_type='detail').first()
+    if not cache or not cache.html_file:
+        return None
+    try:
+        with cache.html_file.open('rb') as fh:
+            return fh.read().decode('utf-8')
+    except Exception as exc:
+        logger.warning('Cache read failed for listing %s: %s', listing_id, exc)
+        return None
+
+
+def _save_page_cache(url_key: str, source_url: str, html: str,
+                     page_type: str, listing_id: str = '') -> None:
+    """
+    Persist an HTML page to the media directory and upsert a MobileDePageCache record.
+
+    Detail pages are written once and never overwritten (original scrape preserved).
+    Search pages are overwritten on each run so the record reflects the latest results.
+    """
+    from django.core.files.base import ContentFile
+    from django.core.files.storage import default_storage
+
+    if page_type == 'detail':
+        rel_path = f'mobile_de_cache/detail/{listing_id}.html'
+    else:
+        rel_path = f'mobile_de_cache/search/{url_key}.html'
+
+    # Delete old file before writing so we always end up with a single copy
+    if default_storage.exists(rel_path):
+        if page_type == 'detail':
+            # Detail pages: preserve original — skip overwrite
+            MobileDePageCache.objects.update_or_create(
+                url_key=url_key,
+                defaults={
+                    'listing_id': listing_id,
+                    'page_type': page_type,
+                    'source_url': source_url[:2000],
+                    'html_file': rel_path,
+                },
+            )
+            return
+        default_storage.delete(rel_path)
+
+    saved_path = default_storage.save(rel_path, ContentFile(html.encode('utf-8')))
+
+    MobileDePageCache.objects.update_or_create(
+        url_key=url_key,
+        defaults={
+            'listing_id': listing_id,
+            'page_type': page_type,
+            'source_url': source_url[:2000],
+            'scraped_at': timezone.now(),
+            'html_file': saved_path,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Database helpers
 # ---------------------------------------------------------------------------
 
@@ -681,7 +843,12 @@ def _upsert_vehicle(listing: dict, config: MobileDeSearchConfig, dry_run: bool):
         'trim': listing.get('trim', ''),
         'year': listing.get('year'),
         'first_registration': listing.get('first_registration', ''),
-        'body_type': listing.get('body_type', ''),
+        'mobile_body_type': listing.get('mobile_body_type', ''),
+        'transmission': listing.get('transmission', ''),
+        'transmission_type': listing.get('transmission_type', ''),
+        'drivetrain': listing.get('drivetrain', ''),
+        'num_gears': listing.get('num_gears'),
+        'num_doors': listing.get('num_doors'),
         'price': listing.get('price'),
         'price_vat': listing.get('price_vat', False),
         'price_vat_exempt': listing.get('price_vat_exempt', False),
@@ -689,6 +856,7 @@ def _upsert_vehicle(listing: dict, config: MobileDeSearchConfig, dry_run: bool):
         'fuel_type': listing.get('fuel_type', ''),
         'power_hp': listing.get('power_hp'),
         'battery_capacity_kwh': listing.get('battery_capacity_kwh'),
+        'displacement_cc': listing.get('displacement_cc'),
         'color': listing.get('color', ''),
         'interior_color': listing.get('interior_color', ''),
         'equipment': listing.get('equipment', []),
@@ -726,6 +894,13 @@ def _upsert_vehicle(listing: dict, config: MobileDeSearchConfig, dry_run: bool):
                 if content_file:
                     img.image.save(content_file.name, content_file, save=False)
                 img.save()
+
+    # Point thumbnail_url at the locally downloaded file (bypass pre_save signal
+    # which fires before images are synced and would see stale data).
+    first_img = vehicle.images.order_by('order').first()
+    if first_img:
+        thumb = first_img.image.url if first_img.image else first_img.url
+        Vehicle.objects.filter(pk=vehicle.pk).update(thumbnail_url=thumb)
 
     action = 'Created' if created else 'Updated'
     logger.info('%s vehicle %s: %s', action, listing_id, vehicle)
@@ -841,6 +1016,17 @@ class Command(BaseCommand):
                 logger.warning('HTTP error on page %d: %s', page, exc)
                 break
 
+            if not dry_run:
+                try:
+                    _save_page_cache(
+                        url_key=_search_url_key(params, page),
+                        source_url=f'{BASE_URL}{SEARCH_PATH}',
+                        html=html,
+                        page_type='search',
+                    )
+                except Exception as exc:
+                    logger.warning('Failed to cache search page %d: %s', page, exc)
+
             if debug and page == 1:
                 self._dump_debug(html, config)
 
@@ -859,11 +1045,25 @@ class Command(BaseCommand):
 
                 # Optionally enrich with detail page
                 if fetch_details:
-                    try:
-                        detail_html = client.detail_page(listing_id)
+                    detail_html = _check_detail_cache(listing_id)
+                    if detail_html:
+                        self.stdout.write(f'    [cache] {listing_id}')
+                    else:
+                        try:
+                            detail_html = client.detail_page(listing_id)
+                            if not dry_run:
+                                _save_page_cache(
+                                    url_key=f'detail-{listing_id}',
+                                    source_url=f'{BASE_URL}{DETAIL_PATH}?id={listing_id}',
+                                    html=detail_html,
+                                    page_type='detail',
+                                    listing_id=listing_id,
+                                )
+                        except Exception as exc:
+                            logger.warning('Detail page failed for %s: %s', listing_id, exc)
+                            detail_html = None
+                    if detail_html:
                         listing = _parse_detail_page(detail_html, listing)
-                    except Exception as exc:
-                        logger.warning('Detail page failed for %s: %s', listing_id, exc)
 
                 _upsert_vehicle(listing, config, dry_run)
                 seen_ids.append(listing_id)
