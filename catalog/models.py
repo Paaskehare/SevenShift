@@ -34,7 +34,7 @@ class CarModel(models.Model):
 
 class Generation(models.Model):
     car_model = models.ForeignKey(CarModel, on_delete=models.CASCADE, related_name='generations')
-    name = models.CharField(max_length=50, blank=True, null=True, help_text="Generation code/name, e.g. 'E90', 'Mk IV'")
+    name = models.CharField(max_length=100, blank=True, null=True, help_text="Generation code/name, e.g. 'E90', 'Mk IV'")
     production_start = models.PositiveIntegerField(blank=True, null=True, help_text="Year")
     production_end = models.PositiveIntegerField(blank=True, null=True, help_text="Year")
     data_id = models.IntegerField(db_index=True, null=True, help_text="auto-data.net submodel ID")

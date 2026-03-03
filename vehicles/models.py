@@ -230,7 +230,7 @@ class Vehicle(models.Model):
     # Vehicle identity
     trim = models.CharField(max_length=300, blank=True)
     year = models.PositiveSmallIntegerField(null=True, blank=True)
-    first_registration = models.CharField(max_length=10, blank=True, help_text='MM/YYYY')
+    first_registration = models.DateField(null=True, blank=True)
     mobile_body_type = models.CharField(max_length=100, blank=True, help_text='Raw body type string from mobile.de, e.g. "SUV / Geländewagen"')
     body_type = models.CharField(max_length=100, blank=True, help_text='Normalized catalog slug, e.g. "suv"')
     TRANSMISSION_CHOICES = (
@@ -326,6 +326,14 @@ class Vehicle(models.Model):
         parts = [p for p in [make, model, self.trim] if p]
         label = ' '.join(parts) or self.plate_number or self.listing_id or f'#{self.pk}'
         return f'{label} ({self.year})' if self.year else label
+
+    @property
+    def age_months(self) -> int | None:
+        if not self.first_registration:
+            return None
+        from datetime import date
+        today = date.today()
+        return (today.year - self.first_registration.year) * 12 + (today.month - self.first_registration.month)
 
     @property
     def display_name(self):

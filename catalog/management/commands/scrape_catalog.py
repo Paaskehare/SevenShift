@@ -119,6 +119,12 @@ def _decimal_str(value) -> str | None:
     return cleaned or None
 
 
+def _first_int(value) -> int | None:
+    """Extract the first integer from a string. Safe for range values like '450 - 1950 l'."""
+    m = re.search(r'\d+', str(value)) if value else None
+    return int(m.group()) if m else None
+
+
 def _int(value) -> int | None:
     try:
         d = _digits(value)
@@ -319,7 +325,7 @@ def _parse_specs(d: dict) -> dict:
         specs['max_load_kg'] = _int(d['Max load'])
 
     if d.get('Trunk (boot) space - minimum'):
-        specs['trunk_volume_l'] = _int(d['Trunk (boot) space - minimum'])
+        specs['trunk_volume_l'] = _first_int(d['Trunk (boot) space - minimum'])
 
     return specs
 

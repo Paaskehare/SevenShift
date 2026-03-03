@@ -325,8 +325,9 @@ def _parse_ad_json(ad: dict) -> dict | None:
     # Current: attr.fr = "01/2023"; legacy: firstRegistrationDate = "2023-01"
     attr = ad.get('attr') or {}
     reg = attr.get('fr') or ad.get('firstRegistrationDate') or ad.get('firstRegistration') or ''
-    out['first_registration'] = str(reg)[:7]
-    out['year'] = _year_from_reg(out['first_registration'])
+    reg_str = str(reg)[:7]
+    out['first_registration'] = _parse_reg_date(reg_str)
+    out['year'] = _year_from_reg(reg_str)
 
     # Price
     # Current: price.grossAmount (int); legacy: price.amount
@@ -522,7 +523,7 @@ def _parse_card_html(card) -> dict | None:
         'make_name': '',   # hard to parse from card — populated from detail page
         'model_name': '',
         'trim': title,
-        'first_registration': _extract_reg(details_text),
+        'first_registration': _parse_reg_date(_extract_reg(details_text)),
         'year': _year_from_reg(_extract_reg(details_text)),
         'price': _parse_price(price_raw),
         'price_vat': False,
@@ -661,6 +662,21 @@ def _year_from_reg(reg: str) -> int | None:
 def _extract_reg(text: str) -> str:
     m = _REG_RE.search(text or '')
     return m.group() if m else ''
+
+
+def _parse_reg_date(reg: str):
+    """Convert a MM/YYYY or YYYY-MM registration string to a date (1st of the month)."""
+    from datetime import date as _date
+    if not reg:
+        return None
+    try:
+        if '/' in reg:
+            month, year = reg[:7].split('/')
+        else:
+            year, month = reg[:7].split('-')
+        return _date(int(year), int(month), 1)
+    except (ValueError, TypeError):
+        return None
 
 
 def _extract_mileage(text: str) -> int | None:
@@ -816,7 +832,7 @@ def _get_or_create_car_model(model_name: str, make: Make | None) -> CarModel | N
     return obj
 
 
-def _download_image(url: str) -> 'django.core.files.base.ContentFile | None':
+def _download_image(url: str) -> 'ContentFile | None':
     """Download an image URL and return a ContentFile, or None on failure."""
     from django.core.files.base import ContentFile
     try:
@@ -842,7 +858,7 @@ def _upsert_vehicle(listing: dict, config: MobileDeSearchConfig, dry_run: bool):
         'source_url': listing.get('source_url', ''),
         'trim': listing.get('trim', ''),
         'year': listing.get('year'),
-        'first_registration': listing.get('first_registration', ''),
+        'first_registration': listing.get('first_registration'),
         'mobile_body_type': listing.get('mobile_body_type', ''),
         'transmission': listing.get('transmission', ''),
         'transmission_type': listing.get('transmission_type', ''),
