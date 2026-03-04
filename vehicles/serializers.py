@@ -4,9 +4,18 @@ from .models import Vehicle, VehicleImage, Make, CarModel
 
 
 class VehicleImageSerializer(serializers.ModelSerializer):
+    image = serializers.SerializerMethodField()
+
     class Meta:
         model = VehicleImage
-        fields = ['id', 'url', 'image', 'order']
+        fields = ['id', 'image', 'order']
+
+    def get_image(self, obj):
+        if not obj.image:
+            return None
+        request = self.context.get('request')
+        url = obj.image.url
+        return request.build_absolute_uri(url) if request else url
 
 
 class CarModelSerializer(serializers.ModelSerializer):
@@ -27,6 +36,13 @@ class VehicleSerializer(serializers.ModelSerializer):
     variant_detail = VariantListSerializer(source='variant', read_only=True)
     images = VehicleImageSerializer(many=True, read_only=True)
     display_name = serializers.ReadOnlyField()
+    thumbnail_url = serializers.SerializerMethodField()
+
+    def get_thumbnail_url(self, obj):
+        if not obj.thumbnail_url:
+            return None
+        request = self.context.get('request')
+        return request.build_absolute_uri(obj.thumbnail_url) if request else obj.thumbnail_url
 
     class Meta:
         model = Vehicle

@@ -1,7 +1,10 @@
+import numpy_financial as npf
+
 from django.db import models
 from django.conf import settings
 from catalog.models import Variant
 from vehicles.models import Vehicle
+from leasing.utils import proportional_registration_tax as _proportional_reg_tax
 
 
 class LeasingOffer(models.Model):
@@ -71,10 +74,60 @@ class Financing(models.Model):
     plates_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     delivery = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     import_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    commission = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     additional_monthly = models.DecimalField(max_digits=10, decimal_places=2, default=0, help_text='Fixed additional monthly cost')
 
     def __str__(self):
         return f"Financing #{self.pk} ({self.get_rate_type_display()}, {self.interest_rate*100:.2f}%)"
+
+    def calculate_proportional_registration_tax(
+        self,
+        registration_tax: float,
+        car_age_months: int,
+        duration_months: int,
+    ) -> float:
+        """Total proportional registration tax for the lease period (DKK)."""
+        return _proportional_reg_tax(
+            registration_tax=registration_tax,
+            car_age_months=car_age_months,
+            duration_months=duration_months,
+            tax_interest=float(self.tax_interest),
+        )
+
+    def calculate_monthly_payment(
+        self,
+        price: float,
+        down_payment: float,
+        residual_value: float,
+        duration_months: int,
+        registration_tax: float,
+        yearly_greentax: float = 0.0,
+    ) -> float:
+        """
+        Calculate the monthly financial leasing payment (finansiel leasing).
+
+            monthly = pmt(price + fees - residual) + tax_interest + additional + greentax
+        """
+        spread_fees = (
+            float(self.lienholder_declaration_fee)
+            + float(self.plates_cost)
+            + float(self.delivery)
+            + float(self.import_fee)
+            + float(self.commission)
+        )
+
+
+        pv = price - down_payment + spread_fees + registration_tax
+
+        core = -npf.pmt(
+            rate=float(self.interest_rate / 100) / 12,
+            nper=duration_months,
+            pv=pv,
+            fv=-residual_value,
+            when = 0,
+        )
+
+        return float(core) + float(self.additional_monthly) + (yearly_greentax / 12)
 
 
 class Listing(models.Model):
@@ -98,7 +151,8 @@ class Listing(models.Model):
 
     price = models.DecimalField(max_digits=12, decimal_places=2)
     currency = models.CharField(max_length=3, default='DKK')
-    tax_value = models.DecimalField(max_digits=12, decimal_places=2)
+    registration_tax = models.DecimalField(max_digits=12, decimal_places=2)
+    proportional_registration_tax = models.BooleanField(default = True)
     mileage = models.PositiveIntegerField(help_text='Current mileage in km')
     km_per_year = models.PositiveIntegerField()
     tax_exempt = models.BooleanField(default=False)
@@ -118,6 +172,26 @@ class Listing(models.Model):
 
     def __str__(self):
         return f"Listing #{self.pk} — {self.vehicle} @ {self.price} {self.currency}"
+
+    def calculate_monthly_payment(self) -> float:
+        if self.proportional_registration_tax:
+            car_age_months = self.vehicle.age_months or 0
+            reg_tax = self.financing.calculate_proportional_registration_tax(
+                registration_tax=float(self.registration_tax),
+                car_age_months=car_age_months,
+                duration_months=self.duration_months,
+            )
+        else:
+            reg_tax = float(self.registration_tax)
+
+        return self.financing.calculate_monthly_payment(
+            price=float(self.price),
+            down_payment=float(self.down_payment),
+            residual_value=float(self.residual_value or 0),
+            duration_months=self.duration_months,
+            registration_tax=reg_tax,
+            yearly_greentax=float(self.yearly_greentax or 0),
+        )
 
 
 class LeasingContract(models.Model):

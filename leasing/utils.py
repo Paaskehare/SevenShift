@@ -296,6 +296,64 @@ def estimate_dk_car_prices(
     }
 
 
+def _reg_tax_steps(car_age_months: int, tax_period: int) -> tuple[int, int, int]:
+    """Split a period into SKAT's three registration-tax depreciation bands."""
+    step1 = step2 = 0
+    if car_age_months < 3:
+        step1 = min(tax_period, 3 - car_age_months)
+    if car_age_months < 36:
+        step2 = min(tax_period - step1, 36 - car_age_months - step1)
+    step3 = tax_period - step1 - step2
+    return step1, step2, step3
+
+
+def reg_tax_value_loss(
+    car_age_months: int,
+    tax_period: int,
+    band1_rate: float = MotorStyrelsen.REG_TAX_BAND1_RATE,
+    band2_rate: float = MotorStyrelsen.REG_TAX_BAND2_RATE,
+    band3_rate: float = MotorStyrelsen.REG_TAX_BAND3_RATE,
+) -> float:
+    """Cumulative fractional depreciation of the registration tax over tax_period months."""
+    step1, step2, step3 = _reg_tax_steps(car_age_months, tax_period)
+    return (
+        step1 * band1_rate
+        + min(step2, 33) * band2_rate
+        + step3 * band3_rate
+    )
+
+
+def proportional_registration_tax(
+    registration_tax: float,
+    car_age_months: int,
+    duration_months: int,
+    tax_interest: float,
+    extra_interest_month: bool = True,
+) -> float:
+    """
+    Calculate the total proportional registration tax (forholdsmæssig
+    registreringsafgift) for a financial lease (Registreringsafgiftsloven §13).
+
+    When extra_interest_month=True (SKAT convention), depreciation is calculated
+    for duration + 1 months but the remaining value for the interest calculation
+    is anchored to duration months — giving the lessee one extra month of interest.
+
+    Returns the total tax for the full lease period.
+    """
+    tax_period = duration_months + 1
+
+    tax_depreciated = registration_tax * reg_tax_value_loss(car_age_months, tax_period)
+
+    #if extra_interest_month:
+    #    tax_remaining = registration_tax * (1 - reg_tax_value_loss(car_age_months, duration_months))
+    #else:
+    tax_remaining = registration_tax - tax_depreciated
+
+    tax_interest_total = tax_remaining * (tax_interest / 100) * tax_period / 12
+
+    return tax_depreciated + tax_interest_total
+
+
 def estimate_new_car_price(
     current_price: float,
     age_months: int,

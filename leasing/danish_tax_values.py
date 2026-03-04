@@ -138,6 +138,12 @@ DEPRECIATION_MINIMUM_IN_KM = 2000
 MINIMUM_REGISTRATION_FEE = 0.00
 MINIMUM_BASIS_TAXATION_AMOUNT = 160000.00
 
+# Proportional registration tax depreciation rates (forholdsmæssig registreringsafgift)
+# Monthly value-loss fractions per SKAT (Registreringsafgiftsloven §13)
+REG_TAX_BAND1_RATE = 0.02   # months 0–3:  2 % / month
+REG_TAX_BAND2_RATE = 0.01   # months 3–36: 2 % / month (>= 36 months: drops to band3)
+REG_TAX_BAND3_RATE = 0.005   # months 36+:  1 % / month
+
 VAN_MAX_REGISTRATION_FEE = 47000
 
 SALES_ADVERT_DEDUCTION_PCT = -0.050

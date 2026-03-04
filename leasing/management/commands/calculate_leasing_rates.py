@@ -21,50 +21,6 @@ DE_VAT = 0.19
 DK_VAT = 0.25
 
 
-def _monthly_payment(
-    price: float,
-    down_payment: float,
-    residual_value: float,
-    duration_months: int,
-    financing: Financing,
-    tax_value: float,
-    yearly_greentax: float,
-) -> float:
-    """
-    Calculate the monthly financial leasing payment (finansiel leasing).
-
-        monthly = depreciation + interest + tax_interest + spread_fees + additional + greentax
-    """
-    net_price = price - down_payment
-
-    # Depreciation: spread net cost minus residual over term
-    depreciation = (net_price - residual_value) / duration_months
-
-    # Interest on average outstanding balance
-    avg_balance = (net_price + residual_value) / 2
-    interest = avg_balance * float(financing.interest_rate) / 12
-
-    # Tax interest on the taxable value (beskatningsgrundlag × skatterente / 12)
-    tax_interest = tax_value * float(financing.tax_interest) / 12
-
-    # One-time fees spread over the lease term
-    spread_fees = (
-        float(financing.lienholder_declaration_fee)
-        + float(financing.plates_cost)
-        + float(financing.delivery)
-        + float(financing.import_fee)
-    ) / duration_months
-
-    return (
-        depreciation
-        + interest
-        + tax_interest
-        + spread_fees
-        + float(financing.additional_monthly)
-        + yearly_greentax / 12
-    )
-
-
 class Command(BaseCommand):
     help = 'Calculate monthly leasing rates for vehicles using a Financing object'
 
@@ -128,8 +84,8 @@ class Command(BaseCommand):
             qs = qs.filter(pk=options['vehicle'])
         qs = qs[:options['limit']]
 
-        COL = [30, 5, 7, 6, 12, 12, 10, 14]
-        HEADERS = ['Vehicle', 'Year', 'Mileage', 'Fuel', 'DK Price', 'Residual', 'Resid %', 'Monthly (DKK)']
+        COL = [30, 5, 7, 6, 12, 12, 10, 12, 14]
+        HEADERS = ['Vehicle', 'Year', 'Mileage', 'Fuel', 'DK Price', 'Residual', 'Resid %', 'Prop. RegTax', 'Monthly (DKK)']
 
         def row(*cells):
             return '  '.join(str(c).rjust(w) for c, w in zip(cells, COL))
@@ -169,8 +125,7 @@ class Command(BaseCommand):
             # Listing price: EUR → DKK, ex source VAT, no DK VAT added
             dk_price = price_eur_ex_vat * options['eur_to_dkk']
             down_payment = options['down_payment']
-            # tax_value (beskatningsgrundlag): estimated Danish used retail price
-            tax_value = float(est['used_retail_price'])
+            registration_tax = float(est['used_registration_tax'])
 
             # Residual value: project age and mileage forward to end of lease,
             # then estimate the car's value at that future point.
@@ -191,14 +146,18 @@ class Command(BaseCommand):
                 )
                 residual_pct = residual_value / dk_price
 
-            monthly = _monthly_payment(
+            prop_reg_tax = financing.calculate_proportional_registration_tax(
+                registration_tax=registration_tax,
+                car_age_months=age,
+                duration_months=options['duration'],
+            )
+
+            monthly = financing.calculate_monthly_payment(
                 price=dk_price,
                 down_payment=down_payment,
                 residual_value=residual_value,
                 duration_months=options['duration'],
-                financing=financing,
-                tax_value=tax_value,
-                yearly_greentax=0.0,
+                registration_tax=prop_reg_tax,
             )
 
             label = str(v)[:COL[0]]
@@ -210,6 +169,7 @@ class Command(BaseCommand):
                 f'{dk_price:,.0f}',
                 f'{residual_value:,.0f}',
                 f'{residual_pct*100:.1f}%',
+                f'{prop_reg_tax:,.0f}',
                 f'{monthly:,.0f}',
             ))
 
@@ -219,7 +179,7 @@ class Command(BaseCommand):
                     financing=financing,
                     price=Decimal(str(round(dk_price, 2))),
                     currency='DKK',
-                    tax_value=Decimal(str(round(tax_value, 2))),
+                    registration_tax=Decimal(str(round(registration_tax, 2))),
                     mileage=v.mileage_km,
                     km_per_year=options['km_per_year'],
                     residual_value=Decimal(str(round(residual_value, 2))),
