@@ -36,7 +36,7 @@ class Command(BaseCommand):
             .exclude(price__isnull=True)
             .exclude(first_registration__isnull=True)
             .exclude(mileage_km__isnull=True)
-            .select_related('make', 'car_model')
+            .select_related('make', 'model')
             [:limit]
         )
 

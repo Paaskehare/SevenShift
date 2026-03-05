@@ -26,14 +26,14 @@ class PublicListingViewSet(
     permission_classes = [AllowAny]
     serializer_class   = ListingPublicSerializer
     filterset_fields   = ['leasing_type', 'vehicle', 'financing']
-    search_fields      = ['vehicle__make__name', 'vehicle__car_model__name', 'vehicle__trim']
+    search_fields      = ['vehicle__make__name', 'vehicle__model__name', 'vehicle__trim']
     ordering_fields    = ['monthly_payment', 'price', 'km_per_year', 'duration_months', 'created_at']
     ordering           = ['-created_at']
 
     def get_queryset(self):
         return (
             Listing.objects
-            .select_related('vehicle__make', 'vehicle__car_model', 'financing')
+            .select_related('vehicle__make', 'vehicle__model', 'financing')
             .prefetch_related('vehicle__images')
             .all()
         )

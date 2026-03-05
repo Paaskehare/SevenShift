@@ -49,7 +49,7 @@ class VehicleSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             # Relationships
-            'search_config', 'variant', 'variant_detail', 'make', 'car_model',
+            'search_config', 'variant', 'variant_detail', 'make', 'model',
             # Identity
             'display_name', 'trim', 'year', 'first_registration', 'body_type',
             'listing_id', 'source_url',

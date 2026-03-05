@@ -139,6 +139,24 @@ class MobileDeSearchConfig(models.Model):
         ('LPG', 'LPG'),
     ]
 
+    '''
+    'benzin': 'petrol',
+    'diesel': 'diesel',
+    'elektro': 'electric',
+    'hybrid (benzin)': 'petrol',
+    'hybrid (benzin/elektro)': 'petrol',
+    'hybrid (diesel)': 'diesel',
+    'hybrid (diesel/elektro)': 'diesel',
+    'plug-in-hybrid (benzin)': 'petrol',
+    'plug-in-hybrid (diesel)': 'diesel',
+    'mild-hybrid (benzin)': 'petrol',
+    'mild-hybrid (diesel)': 'diesel',
+    'erdgas (cng)': 'natural_gas',
+    'lpg': 'lpg',
+    'wasserstoff': 'hydrogen',
+    
+    '''
+
     name = models.CharField(max_length=100)
     is_active = models.BooleanField(default=True)
 
@@ -196,6 +214,16 @@ class Vehicle(models.Model):
         ('retired', 'Retired'),
     ]
 
+    FUEL_CHOICES = [
+        ('DIESEL', 'Diesel'),
+        ('PETROL', 'Petrol'),
+        ('ELECTRICITY', 'Electric'),
+        ('HYBRID_PETROL', 'Hybrid (Petrol)'),
+        ('HYBRID_DIESEL', 'Hybrid (Diesel)'),
+        ('NATURAL_GAS', 'CNG'),
+        ('LPG', 'LPG'),
+    ]
+
     # Relationships
     search_config = models.ForeignKey(
         MobileDeSearchConfig,
@@ -216,7 +244,7 @@ class Vehicle(models.Model):
         null=True, blank=True,
         related_name='vehicles',
     )
-    car_model = models.ForeignKey(
+    model = models.ForeignKey(
         CarModel,
         on_delete=models.SET_NULL,
         null=True, blank=True,
@@ -266,7 +294,7 @@ class Vehicle(models.Model):
     mileage_updated_at = models.DateTimeField(null=True, blank=True)
 
     # Technical specs
-    fuel_type = models.CharField(max_length=50, blank=True)
+    fuel_type = models.CharField(max_length=20, choices=FUEL_CHOICES, blank=True)
     power_hp = models.PositiveSmallIntegerField(null=True, blank=True)
     displacement_cc = models.PositiveIntegerField(null=True, blank=True, help_text='Engine displacement in cc')
     battery_capacity_kwh = models.DecimalField(
@@ -322,7 +350,7 @@ class Vehicle(models.Model):
 
     def __str__(self):
         make = self.make.name if self.make else ''
-        model = self.car_model.name if self.car_model else ''
+        model = self.model.name if self.model else ''
         parts = [p for p in [make, model, self.trim] if p]
         label = ' '.join(parts) or self.plate_number or self.listing_id or f'#{self.pk}'
         return f'{label} ({self.year})' if self.year else label
@@ -340,7 +368,7 @@ class Vehicle(models.Model):
         if self.variant:
             return str(self.variant)
         make = self.make.name if self.make else ''
-        model = self.car_model.name if self.car_model else ''
+        model = self.model.name if self.model else ''
         parts = [p for p in [make, model, self.trim] if p]
         return ' '.join(parts) or self.plate_number or str(self.pk)
 

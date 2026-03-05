@@ -63,6 +63,39 @@ from vehicles.models import (
 
 logger = logging.getLogger(__name__)
 
+# Translate mobile.de German fuel strings to Vehicle.FUEL_CHOICES keys.
+# The scraper receives values like attr.ft = "Benzin"; we normalise to lowercase
+# and do a substring-based lookup so partial matches (e.g. "Hybrid (Benzin/Elektro)")
+# still resolve correctly.
+_FUEL_TRANSLATION: list[tuple[str, str]] = [
+    ('elektro',  'ELECTRICITY'),
+    ('benzin',   'PETROL'),
+    ('diesel',   'DIESEL'),
+    ('erdgas',   'NATURAL_GAS'),
+    ('cng',      'NATURAL_GAS'),
+    ('lpg',      'LPG'),
+    # Hybrids checked after pure types so "Hybrid (Benzin)" wins over "Benzin"
+]
+_FUEL_HYBRID_TRANSLATION: list[tuple[str, str]] = [
+    ('benzin',  'HYBRID_PETROL'),
+    ('diesel',  'HYBRID_DIESEL'),
+]
+
+def _translate_fuel(raw: str) -> str:
+    """Map a raw mobile.de fuel string to a Vehicle.FUEL_CHOICES key, or '' if unknown."""
+    if not raw:
+        return ''
+    lower = raw.lower()
+    if 'hybrid' in lower:
+        for fragment, key in _FUEL_HYBRID_TRANSLATION:
+            if fragment in lower:
+                return key
+    for fragment, key in _FUEL_TRANSLATION:
+        if fragment in lower:
+            return key
+    return ''
+
+
 BASE_URL = 'https://suchen.mobile.de'
 SEARCH_PATH = '/fahrzeuge/search.html'
 DETAIL_PATH = '/fahrzeuge/details.html'
@@ -347,9 +380,10 @@ def _parse_ad_json(ad: dict) -> dict | None:
 
     # Fuel type — current: attr.ft = "Benzin"; legacy: fuelType.value
     fuel_obj = ad.get('fuelType') or {}
-    out['fuel_type'] = attr.get('ft') or (
+    fuel_raw = attr.get('ft') or (
         fuel_obj.get('value') if isinstance(fuel_obj, dict) else str(fuel_obj or '')
     )
+    out['fuel_type'] = _translate_fuel(fuel_raw)
 
     # Power — current: attr.pw = "81 kW (110 PS)"; extract PS value
     pw_raw = attr.get('pw') or ''
@@ -854,7 +888,7 @@ def _upsert_vehicle(listing: dict, config: MobileDeSearchConfig, dry_run: bool):
     defaults = {
         'search_config': config,
         'make': make_obj,
-        'car_model': model_obj,
+        'model': model_obj,
         'source_url': listing.get('source_url', ''),
         'trim': listing.get('trim', ''),
         'year': listing.get('year'),

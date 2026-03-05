@@ -44,15 +44,15 @@ class VehicleImageInline(admin.TabularInline):
 
 @admin.register(Vehicle)
 class VehicleAdmin(admin.ModelAdmin):
-    list_display = ['__str__', 'make', 'car_model', 'year', 'status', 'mileage_km', 'price', 'plate_number', 'is_active']
+    list_display = ['__str__', 'make', 'model', 'year', 'status', 'mileage_km', 'price', 'plate_number', 'is_active']
     list_filter = ['status', 'is_active', 'fuel_type', 'transmission', 'make']
-    search_fields = ['plate_number', 'vin', 'listing_id', 'trim', 'make__name', 'car_model__name']
-    raw_id_fields = ['variant', 'make', 'car_model', 'search_config']
+    search_fields = ['plate_number', 'vin', 'listing_id', 'trim', 'make__name', 'model__name']
+    raw_id_fields = ['variant', 'make', 'model', 'search_config']
     readonly_fields = ['created_at', 'updated_at']
     inlines = [VehicleImageInline]
     fieldsets = [
         ('Identity', {
-            'fields': ['make', 'car_model', 'trim', 'variant', 'year', 'first_registration', 'mobile_body_type', 'body_type', 'num_doors'],
+            'fields': ['make', 'model', 'trim', 'variant', 'year', 'first_registration', 'mobile_body_type', 'body_type', 'num_doors'],
         }),
         ('Scraper', {
             'fields': ['search_config', 'listing_id', 'source_url', 'is_active', 'country', 'seller_type'],

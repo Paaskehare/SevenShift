@@ -38,25 +38,18 @@ from vehicles.models import Vehicle
 
 MIN_SCORE = 30  # minimum to auto-assign; year-alone (20) is not sufficient
 
-# mobile.de German fuel strings → catalog fuel slug fragment (from _normalize()).
+# Vehicle.FUEL_CHOICES key (lowercased) → catalog fuel slug fragment.
 # The catalog stores slugs like "petrol", "diesel", "hybrid_petrol_electricity".
 # We check `catalog_slug.contains(mapped_fragment)` so "petrol" matches all
 # petrol variants including hybrids.  Use more specific keys where needed.
 FUEL_MAP: dict[str, str] = {
-    'benzin': 'petrol',
-    'diesel': 'diesel',
-    'elektro': 'electric',
-    'hybrid (benzin)': 'petrol',
-    'hybrid (benzin/elektro)': 'petrol',
-    'hybrid (diesel)': 'diesel',
-    'hybrid (diesel/elektro)': 'diesel',
-    'plug-in-hybrid (benzin)': 'petrol',
-    'plug-in-hybrid (diesel)': 'diesel',
-    'mild-hybrid (benzin)': 'petrol',
-    'mild-hybrid (diesel)': 'diesel',
-    'erdgas (cng)': 'natural_gas',
-    'lpg': 'lpg',
-    'wasserstoff': 'hydrogen',
+    'petrol':        'petrol',
+    'diesel':        'diesel',
+    'electricity':   'electric',
+    'hybrid_petrol': 'petrol',
+    'hybrid_diesel': 'diesel',
+    'natural_gas':   'natural_gas',
+    'lpg':           'lpg',
 }
 
 SCORE_YEAR_IN_RANGE = 20
@@ -66,6 +59,8 @@ SCORE_POWER_CLOSE = 10    # within ±10%
 SCORE_BODY_MATCH = 20
 SCORE_BATTERY_EXACT = 35  # within ±1 kWh
 SCORE_BATTERY_CLOSE = 15  # within ±5%
+SCORE_DOORS_EXACT = 5
+SCORE_DOORS_CLOSE = 2     # off by 1 (e.g. hatchback counted with/without tailgate)
 
 # mobile.de German category name (lowercased) → set of matching catalog body_type slugs.
 # The catalog slugs come from _normalize() in scrape_catalog, so they are
@@ -203,6 +198,21 @@ def _word_overlap(a: str, b: str) -> int:
     return len(set(re.findall(r'\w+', a.lower())) & set(re.findall(r'\w+', b.lower())))
 
 
+def _substring_token_score(trim: str, variant_str: str) -> int:
+    """
+    Score how many characters of variant tokens appear as substrings anywhere
+    in the trim string.  This handles concatenated tokens like 'xDrive20d':
+    the variant token 'xdrive' is found inside 'xdrive20d' → scores 6,
+    while 'sdrive' is not found at all → scores 0.
+    """
+    trim_lower = trim.lower()
+    return sum(
+        len(word)
+        for word in re.findall(r'\w+', variant_str.lower())
+        if word in trim_lower
+    )
+
+
 def _catalog_fuel_key(vehicle_fuel: str) -> str | None:
     return FUEL_MAP.get((vehicle_fuel or '').lower().strip())
 
@@ -268,6 +278,14 @@ def _score_variant(vehicle: Vehicle, variant: Variant, catalog_fuel_key: str | N
         elif diff / max(veh_kwh, cat_kwh) <= 0.05:
             score += SCORE_BATTERY_CLOSE
 
+    if vehicle.num_doors and variant.doors:
+        # this matches only in one direction, either the exact amount, or an additional door
+        diff = variant.doors - vehicle.num_doors
+        if diff == 0:
+            score += SCORE_DOORS_EXACT
+        elif diff == 1:
+            score += SCORE_DOORS_CLOSE
+
     return score
 
 
@@ -284,13 +302,24 @@ def _best_match(vehicle: Vehicle) -> tuple['Variant | None', int, str, list[tupl
     if not catalog_make:
         return None, 0, f'no catalog make for "{vehicle.make.name}"', []
 
-    if not vehicle.car_model:
+    if not vehicle.model:
         return None, 0, 'no car model set', []
 
-    catalog_models = _find_catalog_models(catalog_make, vehicle.car_model.name)
+    catalog_models = _find_catalog_models(catalog_make, vehicle.model.name)
+    if not catalog_models:
+        # Fallback: find Variants whose name starts with the vehicle model name.
+        seen: set[int] = set()
+        for v in Variant.objects.filter(
+            generation__car_model__make=catalog_make,
+            variant__istartswith=vehicle.model.name,
+        ).select_related('generation__car_model'):
+            car_model = v.generation.car_model
+            if car_model.pk not in seen:
+                seen.add(car_model.pk)
+                catalog_models.append(car_model)
     if not catalog_models:
         return None, 0, (
-            f'no catalog model for "{vehicle.car_model.name}" '
+            f'no catalog model for "{vehicle.model.name}" '
             f'under "{catalog_make.name}"'
         ), []
 
@@ -330,6 +359,12 @@ def _best_match(vehicle: Vehicle) -> tuple['Variant | None', int, str, list[tupl
         winners = [v for v, o in overlaps if o == best_overlap]
         if len(winners) == 1:
             return winners[0], best_score, 'ok (title tiebreak)', top
+        # Equal word overlap — fall back to substring token score against trim string.
+        fuzzy = [(v, _substring_token_score(trim, _strip_parens(str(v)))) for v in winners]
+        best_ratio = max(r for _, r in fuzzy)
+        fuzzy_winners = [v for v, r in fuzzy if r == best_ratio]
+        if len(fuzzy_winners) == 1:
+            return fuzzy_winners[0], best_score, 'ok (fuzzy tiebreak)', top
         return None, best_score, f'ambiguous — {len(tied)} variants share top score {best_score}', top
 
     return best_variant, best_score, 'ok', top
@@ -374,7 +409,7 @@ class Command(BaseCommand):
         make_filter = options.get('make', '')
         verbose = options['verbose']
 
-        qs = Vehicle.objects.select_related('make', 'car_model', 'variant')
+        qs = Vehicle.objects.select_related('make', 'model', 'variant')
         if make_filter:
             qs = qs.filter(make__name__icontains=make_filter)
         if not reset:
@@ -420,6 +455,11 @@ class Command(BaseCommand):
                 if verbose or apply:
                     self.stdout.write(
                         self.style.SUCCESS(f'  ✓ [{score:3d}] {vehicle}  →  {best}')
+                    )
+                    trim = re.sub('\s+', ' ', _strip_parens(best.variant))
+                    trim += f' - {best.power_hp} hk'
+                    self.stdout.write(
+                        f'         → {vehicle.make.name} {vehicle.model.name} {trim}'
                     )
             elif reason.startswith('no catalog'):
                 no_catalog_count += 1
